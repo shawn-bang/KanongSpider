@@ -220,6 +220,43 @@ class KanongSpider(object):
         result = md5.hexdigest()
         return result
 
+    # 爬取文章中嵌入的图片信息
+    def crawl_article_inner_images(self, article_content_doc):
+        article_content_inner_images = article_content_doc.xpath("//table//div[@class='t_fsz']//img[@file]")
+        for x in range(len(article_content_inner_images)):
+            img_url = article_content_inner_images[x].attrib['file']
+
+            # 设置图片默认宽高
+            try:
+                img_width = article_content_inner_images[x].attrib['width']
+                img_height = article_content_inner_images[x].attrib['height']
+            except KeyError:
+                img_width = "400"
+                img_height = "711"
+
+            img_res = requests.session().get(img_url)
+            img_string = StringIO(img_res.content)
+            img_stream = Image.open(img_string)
+            img_format = img_stream.format
+            img_size = img_stream.size
+
+            # 如果图片是表情图片，大小需要给定真实图片大小，否则表情图片会被撑的很大，很难看
+            img_width_real = img_size[0]
+            img_height_real = img_size[1]
+            if img_width_real < 400:
+                img_width = str(img_width_real)
+                img_height = str(img_height_real)
+
+            img_filename = KanongSpider.md5(img_url) + "." + img_format
+            new_img_url = self.images_source_url + img_filename
+            img_stream.save(self.images_path + img_filename)
+
+            new_img_element_string = "<img id='" + KanongSpider.md5(
+                img_url) + "' src='" + new_img_url + "' width='" + img_width + "' height='" + img_height + "'/>"
+            new_img_element = etree.fromstring(new_img_element_string)
+
+            article_content_inner_images[x].getparent().replace(article_content_inner_images[x], new_img_element)
+
     # 爬去其它列表页文章目标地址和相关概要信息 & 爬去列表页文章内容
     def crawl_article_page(self, crawl_root_link, tbodys):
         for i in range(len(tbodys)):
@@ -253,39 +290,7 @@ class KanongSpider(object):
             article_content_doc = etree.HTML(article_content_html)
 
             # 解析文章详细内容 & 爬取文章中嵌入的图片信息
-            article_content_inner_images = article_content_doc.xpath("//table//div[@class='t_fsz']//img[@file]")
-            for x in range(len(article_content_inner_images)):
-                img_url = article_content_inner_images[x].attrib['file']
-
-                # 设置图片默认宽高
-                try:
-                    img_width = article_content_inner_images[x].attrib['width']
-                    img_height = article_content_inner_images[x].attrib['height']
-                except KeyError:
-                    img_width = "400"
-                    img_height = "711"
-
-                img_res = requests.session().get(img_url)
-                img_string = StringIO(img_res.content)
-                img_stream = Image.open(img_string)
-                img_format = img_stream.format
-                img_size = img_stream.size
-
-                # 如果图片是表情图片，大小需要给定真实图片大小，否则表情图片会被撑的很大，很难看
-                img_width_real = img_size[0]
-                img_height_real = img_size[1]
-                if img_width_real < 400:
-                    img_width = str(img_width_real)
-                    img_height = str(img_height_real)
-
-                img_filename = KanongSpider.md5(img_url) + "." + img_format
-                new_img_url = self.images_source_url + img_filename
-                img_stream.save(self.images_path + img_filename)
-
-                new_img_element_string = "<img id='" + KanongSpider.md5(img_url) + "' src='" + new_img_url + "' width='" + img_width + "' height='" + img_height + "'/>"
-                new_img_element = etree.fromstring(new_img_element_string)
-
-                article_content_inner_images[x].getparent().replace(article_content_inner_images[x], new_img_element)
+            self.crawl_article_inner_images(article_content_doc)
 
             new_article_content_html = etree.tostring(article_content_doc)
             new_article_content_html = self.HTMLParser.unescape(new_article_content_html).encode("ISO-8859-1")
