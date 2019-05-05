@@ -1,5 +1,5 @@
 # -*- coding:utf-8 -*-
-import os, sys, re, time, json, requests, random, base64, datetime, hashlib, logging
+import os, re, time, json, requests, random, base64, datetime, hashlib, logging
 
 from HTMLParser import HTMLParser
 
@@ -12,6 +12,10 @@ from lxml.html import fromstring, tostring
 from StringIO import StringIO
 
 from PIL import Image
+
+import sys
+reload(sys)
+sys.setdefaultencoding('utf-8')
 
 ip = "0.0.0.0"
 port = "9201"
@@ -43,11 +47,20 @@ class KanongSpider(object):
 
         self.session = requests.session()
 
-        self.html_path = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/html"
-        self.images_path = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/images"
-        self.videos_path = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos"
-        self.html_template_path = "http://127.0.0.1:8008/template/KanongTemplate.html"
+        self.source_hostname = "http://127.0.0.1:8008/"
+        self.html_path = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/html/"
+        self.html_source_url = self.source_hostname + "html/"
+        self.images_path = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/images/"
+        self.images_source_url = self.source_hostname + "images/"
+        self.videos_path = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos/"
+        self.videos_source_url = self.source_hostname + "videos/"
+        self.html_template_url = "http://127.0.0.1:8008/template/KanongTemplate.html"
         self.qrcode_image_save_path = "/Users/shawnxiao/Desktop/kanong_qrcode.png"
+
+        self.html_template = requests.get(self.html_template_url).content
+        self.html_template_title_html_pattern = "#article_title_html#"
+        self.html_template_article_html_pattern = "#article_content_html#"
+        self.html_template_title_pattern = "#article_title#"
 
         self.username = username_input
         self.password = password_input
@@ -58,14 +71,16 @@ class KanongSpider(object):
         self.getQRCodeUrl = "https://www.51kanong.com/plugin.php?id=zimucms_appscan&model=pcqrcode&infloat=yes&handlekey=pcqrcode&inajax=1&ajaxtarget=fwin_content_pcqrcode"
 
         self.HTMLParser = HTMLParser()
+        self.es_index = "spider"
+        self.es_index_type = "kanong"
         self.es = Elasticsearch([{'host': ip, 'port': port}])
 
         self.crawlTargetUrls = {
-            "dk_kz": "https://www.51kanong.com/yh-119-@.htm",  # ——贷款口子分类——贷款口子
-            "xyk_kz": "https://www.51kanong.com/yh-118-@.htm",  # ——信用卡分类——信用卡口子
-            "zhyp_spjc": "https://www.51kanong.com/yh-129-@.htm",  # ——综合音频教程——分类
-            "zjpx": "https://www.51kanong.com/yh-120-@.htm",  # ——综合音频教程——中介培训
-            "xykjl": "https://www.51kanong.com/yh-209-@.htm",  # ——讨论口子——信用卡交流
+            # "dk_kz": "https://www.51kanong.com/yh-119-@.htm",  # ——贷款口子分类——贷款口子
+            # "xyk_kz": "https://www.51kanong.com/yh-118-@.htm",  # ——信用卡分类——信用卡口子
+            # "zhyp_spjc": "https://www.51kanong.com/yh-129-@.htm",  # ——综合音频教程——分类
+            # "zjpx": "https://www.51kanong.com/yh-120-@.htm",  # ——综合音频教程——中介培训
+            # "xykjl": "https://www.51kanong.com/yh-209-@.htm",  # ——讨论口子——信用卡交流
             "rmjl": "https://www.51kanong.com/yh-140-@.htm"  # ——查询助手——热门交流&贷款口子交流
         }
 
@@ -123,9 +138,7 @@ class KanongSpider(object):
         logging_url = self.website_hostname + logging_url
         form_hash = login_page_doc.xpath("//input[@name='formhash']")[0].attrib['value']
 
-        md5 = hashlib.md5()
-        md5.update(self.password.encode())
-        password_md5 = md5.hexdigest()
+        password_md5 = KanongSpider.md5(self.password)
 
         login_data = {
             "loginsubmit": "yes",
@@ -158,7 +171,7 @@ class KanongSpider(object):
         return result
 
 
-    def crawlObjectViedo(self):
+    def crawl_object_viedo(self):
         video_res = self.session.get("https://webcast.vyuan8.cn/vyuan/plugin.php?id=vyuan_zhibo&mod=viewpc&identify=5712929&password=zxjd123")
         video_page = video_res.content
         video_page_doc = etree.HTML(video_page)
@@ -199,9 +212,128 @@ class KanongSpider(object):
                 else:
                     print "fail......"
 
+    # md5字符串
+    @staticmethod
+    def md5(content):
+        md5 = hashlib.md5()
+        md5.update(content.encode())
+        result = md5.hexdigest()
+        return result
+
+    # 爬去其它列表页文章目标地址和相关概要信息 & 爬去列表页文章内容
+    def crawl_article_page(self, crawl_root_link, tbodys):
+        for i in range(len(tbodys)):
+            article_id = ''.join(re.findall(r"\d+\.?\d*", tbodys[i].attrib['id']))
+            tbody = etree.HTML(etree.tostring(tbodys[i]))
+            article_a = tbody.xpath("//a[@class='deanforumtitname']")[0]
+            article_page_url = article_a.attrib['href']
+            article_page_url = self.website_hostname + article_page_url
+            logger.info("!!!!!!article_page_url : " + article_page_url)
+            article_title = article_a.text.encode("ISO-8859-1")
+            # 爬取文章页面详细内容
+            article_page_res = self.session.get(article_page_url)
+            article_page_doc = etree.HTML(article_page_res.content.replace("&nbsp;", " "))
+
+            # 爬取文章标题html
+            title_element = article_page_doc.xpath("//div[@class='deanviewtit cl']")[0]
+            title_html = etree.tostring(title_element)
+            title_html = self.HTMLParser.unescape(title_html).encode("ISO-8859-1")
+
+            # 爬取文章标签分类信息
+            type_element = article_page_doc.xpath("//span[@id='thread_subject']/preceding-sibling::a")
+            article_type = None
+            if type_element:
+                article_type = type_element.text.encode("ISO-8859-1").decode("utf-8")
+                article_type = article_type.replace("[", "").replace("]", "")
+                logger.info("article_type : " + article_type)
+
+            # 爬取文章详细内容html
+            article_content_element = article_page_doc.xpath("//div[@class='viewbox firstfloor cl']/table")[0]
+            article_content_html = etree.tostring(article_content_element)
+            article_content_doc = etree.HTML(article_content_html)
+
+            # 解析文章详细内容 & 爬取文章中嵌入的图片信息
+            article_content_inner_images = article_content_doc.xpath("//table//div[@class='t_fsz']//img[@file]")
+            for x in range(len(article_content_inner_images)):
+                img_url = article_content_inner_images[x].attrib['file']
+
+                # 设置图片默认宽高
+                try:
+                    img_width = article_content_inner_images[x].attrib['width']
+                    img_height = article_content_inner_images[x].attrib['height']
+                except KeyError:
+                    img_width = "400"
+                    img_height = "711"
+
+                img_res = requests.session().get(img_url)
+                img_string = StringIO(img_res.content)
+                img_stream = Image.open(img_string)
+                img_format = img_stream.format
+                img_size = img_stream.size
+
+                # 如果图片是表情图片，大小需要给定真实图片大小，否则表情图片会被撑的很大，很难看
+                img_width_real = img_size[0]
+                img_height_real = img_size[1]
+                if img_width_real < 400:
+                    img_width = str(img_width_real)
+                    img_height = str(img_height_real)
+
+                img_filename = KanongSpider.md5(img_url) + "." + img_format
+                new_img_url = self.images_source_url + img_filename
+                img_stream.save(self.images_path + img_filename)
+
+                new_img_element_string = "<img id='" + KanongSpider.md5(img_url) + "' src='" + new_img_url + "' width='" + img_width + "' height='" + img_height + "'/>"
+                new_img_element = etree.fromstring(new_img_element_string)
+
+                article_content_inner_images[x].getparent().replace(article_content_inner_images[x], new_img_element)
+
+            new_article_content_html = etree.tostring(article_content_doc)
+            new_article_content_html = self.HTMLParser.unescape(new_article_content_html).encode("ISO-8859-1")
+
+            # 解析文章详细内容 & 爬取视频
+            # TODO ......
+
+            article_content = article_page_doc.xpath("//div[@class='viewbox firstfloor cl']//div[@class='t_fsz']//table//text()")
+            article_content = ''.join(article_content)
+            # 处理特殊字符
+            article_content = article_content.replace(' ', '').replace('\n', '').replace('\r', '')
+            article_content = article_content.encode("ISO-8859-1")
+            pattern = re.compile(ur"[\u4e00-\u9fa5]")
+            article_content = "".join(pattern.findall(article_content.decode('utf8'))).encode('utf-8')
+
+            new_article_content_html = self.html_template.replace(self.html_template_title_pattern, article_title).\
+                replace(self.html_template_title_html_pattern, title_html).\
+                replace(self.html_template_article_html_pattern, new_article_content_html)
+
+            file_name = article_id + ".html"
+            file_full_path = self.html_path + file_name
+            command = "cd " + self.html_path + "&&" + " touch " + article_id + ".html"
+            if os.system(command) == 0:
+                with open(file_full_path, "wb") as html:
+                    html.write(new_article_content_html)
+                logger.info("Save Html success! FileName is " + file_full_path)
+            else:
+                logger.info("Save Html fail! FileName is " + file_full_path)
+
+            article_body = {
+                "crawl_root_link": crawl_root_link,
+                "title": article_title,
+                "date": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())),
+                "article": article_content,
+                "link": self.html_source_url + file_name,
+                "source_link": article_page_url,
+                "type": article_type
+            }
+            create_status = self.es.index(index=self.es_index, doc_type=self.es_index_type, id=article_id,
+                                          body=article_body)
+            if not create_status:
+                logger.info("Crawl Fail! URL: " + article_page_url)
+
     def main(self):
+        start_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
         # login_status = self.login_by_username()
         if True:
+            # 爬取目标地址列表页首页内容
             for k in self.crawlTargetUrls:
                 v = self.crawlTargetUrls.get(k)
                 logger.info("-------------------------------crawl start-------------------------------")
@@ -214,37 +346,27 @@ class KanongSpider(object):
                 list_page_doc = etree.HTML(list_page_res.content)
                 list_table_tbodys = list_page_doc.xpath("//table[@id='threadlisttableid']/tbody[starts-with(@id, 'normalthread')]")
 
-                for i in range(len(list_table_tbodys)):
-                    tbody = etree.HTML(etree.tostring(list_table_tbodys[i]))
-                    article_a = tbody.xpath("//a[@class='deanforumtitname']")[0]
-                    article_page_url = article_a.attrib['href']
-                    article_title = article_a.text.encode("ISO-8859-1").decode("utf-8")
-                    logger.info(article_page_url)
-                    logger.info(article_title)
+                # 爬取列表页首页文章目标地址和相关概要信息
+                self.crawl_article_page(v, list_table_tbodys)
 
+                # 爬取总页数
                 pager_title = list_page_doc.xpath("//div[@class='pg']//input[@name='custompage']/following-sibling::span/@title")[0]
                 total_page_count = ''.join(re.findall(r"\d+\.?\d*", pager_title))
                 logger.info(total_page_count)
 
+                # 爬去其它全部列表页内容
                 for n in range(2, int(total_page_count)):
                     list_next_page_url = v.replace("@", str(n))
                     list_next_page_res = self.session.get(list_next_page_url)
                     list_next_page_doc = etree.HTML(list_next_page_res.content)
-                    next_page_tbodys = list_next_page_doc.xpath("//table[@id='threadlisttableid']/tbody[starts-with(@id, 'normalthread')]")
+                    next_page_tbodys = list_next_page_doc.xpath("//table[@id='threadlisttableid']/tbody[starts-with(@id, 'normalthread') or starts-with(@id, 'stickthread')]")
 
-                    for i in range(len(next_page_tbodys)):
-                        tbody = etree.HTML(etree.tostring(next_page_tbodys[i]))
-                        article_a = tbody.xpath("//a[@class='deanforumtitname']")[0]
-                        article_page_url = article_a.attrib['href']
-                        article_title = article_a.text.encode("ISO-8859-1").decode("utf-8")
-                        logger.info(article_page_url)
-                        logger.info(article_title)
+                    # 爬取其它列表页文章目标地址和相关概要信息 & 爬去列表页文章内容
+                    self.crawl_article_page(v, next_page_tbodys)
+        end_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
+        logger.info("Runtime: from " + start_time + " to " + end_time)
 
-        else:
-            sys.exit(1)
-
-        self.crawlObjectViedo()
-
+        # self.crawl_object_viedo()
 
         # --------------------------------------------------------------------------------------------------------------
         # test_page_res = self.session.get("https://www.51kanong.com/xyk-2172281-1.htm")
