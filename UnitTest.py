@@ -64,16 +64,25 @@ def md5(content):
     return result
 
 
+def regexSearch(regex, content, index):
+    pattern = re.compile(regex)
+    matcher = re.search(pattern, content)
+    result = matcher.group(index)
+    return result
+
+
 username = raw_input('Please input username: ')
 password = raw_input('Please input password: ')
 if login_by_username(username, password):
     # target_url = "https://www.51kanong.com/xyk-2250277-1.htm"
-    target_url = "https://www.51kanong.com/xyk-2176082-1.htm"
+    # target_url = "https://www.51kanong.com/xyk-2176082-1.htm"
+    target_url = "https://www.51kanong.com/xyk-1971390-1.htm"
     target_res = session.get(target_url)
     article_content_doc = etree.HTML(target_res.content)
     # 直接在文章主体中嵌入video标签，直接下载-------------------------------------------------------------------------------
     article_content_inner_videos = article_content_doc.xpath("//div[@class='viewbox firstfloor cl']//table//div[@class='t_fsz']//video")
     for x in range(len(article_content_inner_videos)):
+        print ">>>>>>>>>111111"
         video_element = article_content_inner_videos[x]
         video_inner_source_element = article_content_inner_videos[x].getchildren()[0]
         video_url = video_inner_source_element.attrib['src']
@@ -104,6 +113,7 @@ if login_by_username(username, password):
     # 文章主体链接中嵌入视频播放链接，特征http://webcast.vyuan8.cn----------------------------------------------------------
     article_content_inner_videos1 = article_content_doc.xpath("//div[@class='viewbox firstfloor cl']//table//div[@class='t_fsz']//a[starts-with(@href, 'http://webcast.vyuan8.cn')]")
     for x in range(len(article_content_inner_videos1)):
+        print ">>>>>>>>>222222"
         show_video_url = article_content_inner_videos1[x].attrib['href']
         show_video_res = session.get(show_video_url)
 
@@ -128,18 +138,95 @@ if login_by_username(username, password):
 
         video_inner_source_element_string = '<video autoplay="autoplay" src="' + videos_source_url + video_file_name + '" style="width: 896px; height: 506px;"></video>'
         video_inner_source_element = etree.fromstring(video_inner_source_element_string)
-
         article_content_inner_videos1[x].getparent().replace(article_content_inner_videos1[x], video_inner_source_element)
 
     # 其它情况没有非常强的结构逻辑，不能标准化爬取，再想办法
+    article_content_inner_password = article_content_doc.xpath(u"//div[@class='viewbox firstfloor cl']//table//div[@class='t_fsz']//font[contains(text(), '密码')]")
+    article_content_inner_videos2 = article_content_doc.xpath("//div[@class='viewbox firstfloor cl']//table//div[@class='t_fsz']//a[starts-with(@href, 'https://www.vyuan8.com/vyuan/plugin.php')]")
+    for x in range(len(article_content_inner_password)):
+        print ">>>>>>>>>333333"
+        font_password_element = article_content_inner_password[x]
+        font_text = font_password_element.text
+        password = ''.join(re.findall(r"\d", font_text))
+        for z in range(len(article_content_inner_videos2)):
+            a_element = article_content_inner_videos2[z]
+            entrance_video_url = a_element.attrib['href']
+            print "Replace Before:" + entrance_video_url
+            entrance_video_url = entrance_video_url.replace("https://www.vyuan8.com", "https://webcast.vyuan8.cn").replace("activity_id", "identify").replace("mod=introduceV", "mod=viewpc")
+            entrance_video_url = entrance_video_url + "&password=" + password
+            print "Replace After:" + entrance_video_url
+
+            entrance_video_res = session.get(entrance_video_url)
+            if "btnInputPwd" in entrance_video_res.content:
+                print "password error!!!!!!"
+            else:
+                print "password correct!!!!!!"
+                video_page_doc = etree.HTML(entrance_video_res.content)
+                regex1 = r'var videoUrl="(.*?)"'
+                m3u8_url = regexSearch(regex1, entrance_video_res.content, 1)
+                print m3u8_url
+
+                if ".m3u8" in m3u8_url:
+                    print "完整视频"
+                else:
+                    print "试看视频"
+                    continue
+
+                regex2 = r'http\:\/\/(.*?)\/'
+                m3u8_url_host = regexSearch(regex2, m3u8_url, 0)
+                print m3u8_url_host
+
+                m3u8_res = session.get(m3u8_url)
+
+                regex3 = r'record\/.*?\.ts'
+                results_ts = re.findall(regex3, m3u8_res.content)
+                print results_ts
+
+                regex4 = r'_(.*?)\.ts'
+                ts_file_names = re.findall(regex4, m3u8_res.content)
+                print ts_file_names
+
+                for i in range(len(results_ts)):
+                    ts_request_url = m3u8_url_host + results_ts[i]
+                    print ts_request_url
+                    ts_request_res = session.get(ts_request_url)
+                    file_name = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + ts_file_names[i] + ".mp4"
+                    command = "cd " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/ " + "&&" + " touch " + \
+                              ts_file_names[i] + ".mp4"
+                    if os.system(command) == 0:
+                        with open(file_name, "wb") as code:
+                            code.write(ts_request_res.content)
+
+                video_file_name = md5(entrance_video_url) + ".mp4"
+                command1 = "cd " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/ " + "&&" + " touch " + video_file_name
+                if os.system(command1) == 0:
+                    for i in range(len(ts_file_names)):
+                        command2 = "cat " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + ts_file_names[
+                            i] + ".mp4 >> " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + video_file_name
+                        if os.system(command2) == 0:
+                            print "cat successful......."
+                        else:
+                            print "cat fail......"
+                    command3 = "mv /Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + video_file_name + " /Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos && rm -f /Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/*.mp4"
+                    if os.system(command3) == 0:
+                        print "mv successful"
+                    else:
+                        print "mv fail......"
+
+            video_inner_source_element_string = '<video autoplay="autoplay" src="' + videos_source_url + video_file_name + '" style="width: 896px; height: 506px;"></video>'
+            video_inner_source_element = etree.fromstring(video_inner_source_element_string)
+            a_element.getparent().replace(a_element, video_inner_source_element)
+
 
     # 替换文章中引用的其它文章链接
     article_content_inner_a = article_content_doc.xpath("//div[@class='viewbox firstfloor cl']//table//div[@class='t_fsz']//font[starts-with(text(), 'https://www.51kanong.com/')]")
     for x in range(len(article_content_inner_a)):
+        print ">>>>>>>>>444444"
         font_element = article_content_inner_a[x]
         font_parent = font_element.getparent()
-        font_element.text = html_source_url + md5(font_element.text)
-        font_parent.set("href", html_source_url + md5(font_element.text))
+        html_source_url_full = html_source_url + md5(font_element.text) + ".html"
+        font_element.text = html_source_url_full
+        font_parent.set("href", html_source_url_full)
 
     new_article_content = etree.tostring(article_content_doc)
     print new_article_content
