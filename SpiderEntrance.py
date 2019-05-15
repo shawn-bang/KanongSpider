@@ -78,10 +78,10 @@ class KanongSpider(object):
         self.crawlTargetUrls = {
             # "dk_kz": "https://www.51kanong.com/yh-119-@.htm",  # ——贷款口子分类——贷款口子
             # "xyk_kz": "https://www.51kanong.com/yh-118-@.htm",  # ——信用卡分类——信用卡口子
-            # "zhyp_spjc": "https://www.51kanong.com/yh-129-@.htm",  # ——综合音频教程——分类
+            "zhyp_spjc": "https://www.51kanong.com/yh-129-@.htm"  # ——综合音频教程——分类
             # "zjpx": "https://www.51kanong.com/yh-120-@.htm",  # ——综合音频教程——中介培训
             # "xykjl": "https://www.51kanong.com/yh-209-@.htm",  # ——讨论口子——信用卡交流
-            "rmjl": "https://www.51kanong.com/yh-140-@.htm"  # ——查询助手——热门交流&贷款口子交流
+            # "rmjl": "https://www.51kanong.com/yh-140-@.htm"  # ——查询助手——热门交流&贷款口子交流
         }
 
     def login_by_scan(self):
@@ -266,7 +266,7 @@ class KanongSpider(object):
             article_page_url = article_a.attrib['href']
             article_page_url = self.website_hostname + article_page_url
             logger.info("!!!!!!article_page_url : " + article_page_url)
-            article_title = article_a.text.encode("ISO-8859-1")
+            article_title = article_a.text
             # 爬取文章页面详细内容
             article_page_res = self.session.get(article_page_url)
             article_page_doc = etree.HTML(article_page_res.content.replace("&nbsp;", " "))
@@ -274,15 +274,14 @@ class KanongSpider(object):
             # 爬取文章标题html
             title_element = article_page_doc.xpath("//div[@class='deanviewtit cl']")[0]
             title_html = etree.tostring(title_element)
-            title_html = self.HTMLParser.unescape(title_html).encode("ISO-8859-1")
+            title_html = self.HTMLParser.unescape(title_html)
 
             # 爬取文章标签分类信息
             type_element = article_page_doc.xpath("//span[@id='thread_subject']/preceding-sibling::a")
             article_type = None
             if type_element:
-                article_type = type_element.text.encode("ISO-8859-1").decode("utf-8")
+                article_type = type_element[0].text
                 article_type = article_type.replace("[", "").replace("]", "")
-                logger.info("article_type : " + article_type)
 
             # 爬取文章详细内容html
             article_content_element = article_page_doc.xpath("//div[@class='viewbox firstfloor cl']/table")[0]
@@ -293,7 +292,7 @@ class KanongSpider(object):
             self.crawl_article_inner_images(article_content_doc)
 
             new_article_content_html = etree.tostring(article_content_doc)
-            new_article_content_html = self.HTMLParser.unescape(new_article_content_html).encode("ISO-8859-1")
+            new_article_content_html = self.HTMLParser.unescape(new_article_content_html)
 
             # 解析文章详细内容 & 爬取视频
             # TODO ......
@@ -302,7 +301,7 @@ class KanongSpider(object):
             article_content = ''.join(article_content)
             # 处理特殊字符
             article_content = article_content.replace(' ', '').replace('\n', '').replace('\r', '')
-            article_content = article_content.encode("ISO-8859-1")
+            article_content = article_content
             pattern = re.compile(ur"[\u4e00-\u9fa5]")
             article_content = "".join(pattern.findall(article_content.decode('utf8'))).encode('utf-8')
 
@@ -336,8 +335,8 @@ class KanongSpider(object):
 
     def main(self):
         start_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
-        # login_status = self.login_by_username()
-        if True:
+        login_status = self.login_by_username()
+        if login_status:
             # 爬取目标地址列表页首页内容
             for k in self.crawlTargetUrls:
                 v = self.crawlTargetUrls.get(k)
