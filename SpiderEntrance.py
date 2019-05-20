@@ -1,5 +1,5 @@
 # -*- coding:utf-8 -*-
-import os, re, time, json, requests, random, base64, datetime, hashlib, logging
+import os, re, time, json, requests, random, base64, datetime, hashlib, logging, redis
 
 from HTMLParser import HTMLParser
 
@@ -14,6 +14,7 @@ from StringIO import StringIO
 from PIL import Image
 
 import sys
+
 reload(sys)
 sys.setdefaultencoding('utf-8')
 
@@ -71,6 +72,12 @@ class KanongSpider(object):
         self.getQRCodeUrl = "https://www.51kanong.com/plugin.php?id=zimucms_appscan&model=pcqrcode&infloat=yes&handlekey=pcqrcode&inajax=1&ajaxtarget=fwin_content_pcqrcode"
 
         self.HTMLParser = HTMLParser()
+
+        # Redis init
+        self.redis_pool = redis.ConnectionPool(host='127.0.0.1', port=6379)
+        self.redis = redis.Redis(connection_pool=self.redis_pool)
+
+        # Elasticsearch init
         self.es_index = "spider"
         self.es_index_type = "kanong"
         self.es = Elasticsearch([{'host': ip, 'port': port}])
@@ -113,7 +120,7 @@ class KanongSpider(object):
 
         flag = False
         # 循环就是重复执行循环体里面的代码
-        while flag == False:
+        while not flag:
             time.sleep(3)
             status_code_res = self.session.get(check_scan_status_url)
             status_code = status_code_res.content
@@ -174,12 +181,12 @@ class KanongSpider(object):
         # 直接在文章主体中嵌入video标签，直接下载-------------------------------------------------------------------------------
         article_content_inner_videos = article_content_doc.xpath("//table//div[@class='t_fsz']//video")
         for x in range(len(article_content_inner_videos)):
-            print ">>>>>>>>>111111"
+            logger.info(">>>>>>>>>111111")
             video_element = article_content_inner_videos[x]
             video_inner_source_element = article_content_inner_videos[x].getchildren()[0]
             video_url = video_inner_source_element.attrib['src']
             # video_url = article_content_inner_video_urls[x].attrib['src']
-            print "!!!!!!video_url: " + video_url
+            logger.info("!!!!!!video_url: " + video_url)
 
             regex3 = r'[^/]+(?!.*.)'
             results = re.findall(regex3, video_url)
@@ -190,131 +197,155 @@ class KanongSpider(object):
 
             file_format = "." + results1[len(results1) - 1]
 
-            print file_format
+            try:
+                video_request_res = requests.session().get(video_url)
+                file_name = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos/" + KanongSpider.md5(
+                    video_url) + file_format
+                command = "cd " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos/ " + "&&" + " touch " + KanongSpider.md5(
+                    video_url) + file_format
+                if os.system(command) == 0:
+                    with open(file_name, "wb") as code:
+                        code.write(video_request_res.content)
 
-            video_request_res = requests.session().get(video_url)
-            file_name = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos/" + KanongSpider.md5(video_url) + file_format
-            command = "cd " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos/ " + "&&" + " touch " + KanongSpider.md5(video_url) + file_format
-            if os.system(command) == 0:
-                with open(file_name, "wb") as code:
-                    code.write(video_request_res.content)
-
-            video_element.set("poster", "")
-            video_inner_source_element.set("src", self.videos_source_url + KanongSpider.md5(video_url) + file_format)
+                video_element.set("poster", "")
+                video_inner_source_element.set("src",
+                                               self.videos_source_url + KanongSpider.md5(video_url) + file_format)
+            except requests.exceptions.ConnectionError as e:
+                logger.error("视频链接不能访问！！！")
+                logger.error(e.message)
 
         # 文章主体链接中嵌入视频播放链接，特征http://webcast.vyuan8.cn----------------------------------------------------------
-        article_content_inner_videos1 = article_content_doc.xpath("//table//div[@class='t_fsz']//a[starts-with(@href, 'http://webcast.vyuan8.cn')]")
+        article_content_inner_videos1 = article_content_doc.xpath(
+            "//table//div[@class='t_fsz']//a[starts-with(@href, 'http://webcast.vyuan8.cn')]")
         for x in range(len(article_content_inner_videos1)):
-            print ">>>>>>>>>222222"
+            logger.info(">>>>>>>>>222222")
             show_video_url = article_content_inner_videos1[x].attrib['href']
-            show_video_res = self.session.get(show_video_url)
+            try:
+                show_video_res = self.session.get(show_video_url)
 
-            regex1 = r'var videoUrl="(.*?)"'
-            results1 = re.findall(regex1, show_video_res.content)
-            video_url = results1[0]
+                if "btnInputPwd" in show_video_res.content:
+                    logger.warning("#特殊情况, check是否有密码, 如果有密码还是可以去适配的#")
+                    continue
 
-            print "!!!!!!video_url: " + video_url
+                regex1 = r'var videoUrl="(.*?)"'
+                results1 = re.findall(regex1, show_video_res.content)
+                video_url = results1[0]
 
-            regex2 = r'\/(.*?)\.([\w]+)'
-            results2 = re.findall(regex2, video_url)
-            content_parts = results2[len(results2) - 1]
-            file_format = "." + content_parts[len(content_parts) - 1]
-            video_file_name = KanongSpider.md5(video_url) + file_format
+                logger.info("!!!!!!video_url: " + video_url)
 
-            video_request_res = requests.session().get(video_url)
-            file_name = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos/" + video_file_name
-            command = "cd " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos/ " + "&&" + " touch " + video_file_name
-            if os.system(command) == 0:
-                with open(file_name, "wb") as code:
-                    code.write(video_request_res.content)
+                regex2 = r'\/(.*?)\.([\w]+)'
+                results2 = re.findall(regex2, video_url)
+                content_parts = results2[len(results2) - 1]
+                file_format = "." + content_parts[len(content_parts) - 1]
+                video_file_name = KanongSpider.md5(video_url) + file_format
 
-            video_inner_source_element_string = '<video autoplay="autoplay" src="' + self.videos_source_url + video_file_name + '" style="width: 896px; height: 506px;"></video>'
-            video_inner_source_element = etree.fromstring(video_inner_source_element_string)
-            article_content_inner_videos1[x].getparent().replace(article_content_inner_videos1[x], video_inner_source_element)
+                video_request_res = requests.session().get(video_url)
+                file_name = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos/" + video_file_name
+                command = "cd " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos/ " + "&&" + " touch " + video_file_name
+                if os.system(command) == 0:
+                    with open(file_name, "wb") as code:
+                        code.write(video_request_res.content)
+
+                video_inner_source_element_string = '<video autoplay="autoplay" src="' + self.videos_source_url + video_file_name + '" style="width: 896px; height: 506px;"></video>'
+                video_inner_source_element = etree.fromstring(video_inner_source_element_string)
+                article_content_inner_videos1[x].getparent().replace(article_content_inner_videos1[x],
+                                                                     video_inner_source_element)
+            except requests.exceptions.ConnectionError as e:
+                logger.error("视频链接不能访问！！！")
+                logger.error(e.message)
 
         # 其它情况没有非常强的结构逻辑，不能标准化爬取，再想办法
         article_content_inner_password = article_content_doc.xpath(
             u"//div[@class='viewbox firstfloor cl']//table//div[@class='t_fsz']//font[contains(text(), '密码')]")
-        article_content_inner_videos2 = article_content_doc.xpath("//table//div[@class='t_fsz']//a[starts-with(@href, 'https://www.vyuan8.com/vyuan/plugin.php')]")
+        article_content_inner_videos2 = article_content_doc.xpath(
+            "//table//div[@class='t_fsz']//a[starts-with(@href, 'https://www.vyuan8.com/vyuan/plugin.php')]")
         for x in range(len(article_content_inner_password)):
-            print ">>>>>>>>>333333"
+            logger.info(">>>>>>>>>333333")
             font_password_element = article_content_inner_password[x]
             font_text = font_password_element.text
-            password = ''.join(re.findall(r"\d", font_text))
+            password = ''.join(re.findall(r"\w", font_text))
             for z in range(len(article_content_inner_videos2)):
                 a_element = article_content_inner_videos2[z]
                 entrance_video_url = a_element.attrib['href']
-                print "Replace Before:" + entrance_video_url
-                entrance_video_url = entrance_video_url.replace("https://www.vyuan8.com", "https://webcast.vyuan8.cn").replace("activity_id", "identify").replace("mod=introduceV", "mod=viewpc")
+                logger.info("Replace Before:" + entrance_video_url)
+                entrance_video_url = entrance_video_url.replace("https://www.vyuan8.com",
+                                                                "https://webcast.vyuan8.cn").replace("activity_id",
+                                                                                                     "identify").replace(
+                    "mod=introduceV", "mod=viewpc")
                 entrance_video_url = entrance_video_url + "&password=" + password
-                print "Replace After:" + entrance_video_url
+                logger.info("Replace After:" + entrance_video_url)
 
-                entrance_video_res = self.session.get(entrance_video_url)
-                if "btnInputPwd" in entrance_video_res.content:
-                    print "password error!!!!!!"
-                else:
-                    print "password correct!!!!!!"
-                    regex1 = r'var videoUrl="(.*?)"'
-                    m3u8_url = KanongSpider.regexSearch(regex1, entrance_video_res.content, 1)
-                    print m3u8_url
-
-                    if ".m3u8" in m3u8_url:
-                        print "完整视频"
+                try:
+                    entrance_video_res = self.session.get(entrance_video_url)
+                    if "btnInputPwd" in entrance_video_res.content:
+                        print "password error!!!!!!"
                     else:
-                        print "试看视频"
-                        continue
+                        print "password correct!!!!!!"
+                        regex1 = r'var videoUrl="(.*?)"'
+                        m3u8_url = KanongSpider.regexSearch(regex1, entrance_video_res.content, 1)
+                        print m3u8_url
 
-                    regex2 = r'http\:\/\/(.*?)\/'
-                    m3u8_url_host = KanongSpider.regexSearch(regex2, m3u8_url, 0)
-                    print m3u8_url_host
-
-                    m3u8_res = self.session.get(m3u8_url)
-
-                    regex3 = r'record\/.*?\.ts'
-                    results_ts = re.findall(regex3, m3u8_res.content)
-                    print results_ts
-
-                    regex4 = r'_(.*?)\.ts'
-                    ts_file_names = re.findall(regex4, m3u8_res.content)
-                    print ts_file_names
-
-                    for i in range(len(results_ts)):
-                        ts_request_url = m3u8_url_host + results_ts[i]
-                        print ts_request_url
-                        ts_request_res = self.session.get(ts_request_url)
-                        file_name = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + ts_file_names[
-                            i] + ".mp4"
-                        command = "cd " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/ " + "&&" + " touch " + \
-                                  ts_file_names[i] + ".mp4"
-                        if os.system(command) == 0:
-                            with open(file_name, "wb") as code:
-                                code.write(ts_request_res.content)
-
-                    video_file_name = KanongSpider.md5(entrance_video_url) + ".mp4"
-                    command1 = "cd " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/ " + "&&" + " touch " + video_file_name
-                    if os.system(command1) == 0:
-                        for i in range(len(ts_file_names)):
-                            command2 = "cat " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + \
-                                       ts_file_names[
-                                           i] + ".mp4 >> " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + video_file_name
-                            if os.system(command2) == 0:
-                                print "cat successful......."
-                            else:
-                                print "cat fail......"
-                        command3 = "mv /Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + video_file_name + " /Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos && rm -f /Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/*.mp4"
-                        if os.system(command3) == 0:
-                            print "mv successful"
+                        if ".m3u8" in m3u8_url:
+                            print "完整视频"
                         else:
-                            print "mv fail......"
+                            print "试看视频"
+                            continue
 
-                video_inner_source_element_string = '<video autoplay="autoplay" src="' + self.videos_source_url + video_file_name + '" style="width: 896px; height: 506px;"></video>'
-                video_inner_source_element = etree.fromstring(video_inner_source_element_string)
-                a_element.getparent().replace(a_element, video_inner_source_element)
+                        regex2 = r'http\:\/\/(.*?)\/'
+                        m3u8_url_host = KanongSpider.regexSearch(regex2, m3u8_url, 0)
+                        print m3u8_url_host
+
+                        m3u8_res = self.session.get(m3u8_url)
+
+                        regex3 = r'record\/.*?\.ts'
+                        results_ts = re.findall(regex3, m3u8_res.content)
+                        print results_ts
+
+                        regex4 = r'_(.*?)\.ts'
+                        ts_file_names = re.findall(regex4, m3u8_res.content)
+                        print ts_file_names
+
+                        for i in range(len(results_ts)):
+                            ts_request_url = m3u8_url_host + results_ts[i]
+                            print ts_request_url
+                            ts_request_res = self.session.get(ts_request_url)
+                            file_name = "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + ts_file_names[
+                                i] + ".mp4"
+                            command = "cd " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/ " + "&&" + " touch " + \
+                                      ts_file_names[i] + ".mp4"
+                            if os.system(command) == 0:
+                                with open(file_name, "wb") as code:
+                                    code.write(ts_request_res.content)
+
+                        video_file_name = KanongSpider.md5(entrance_video_url) + ".mp4"
+                        command1 = "cd " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/ " + "&&" + " touch " + video_file_name
+                        if os.system(command1) == 0:
+                            for i in range(len(ts_file_names)):
+                                command2 = "cat " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + \
+                                           ts_file_names[
+                                               i] + ".mp4 >> " + "/Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + video_file_name
+                                if os.system(command2) == 0:
+                                    print "cat successful......."
+                                else:
+                                    print "cat fail......"
+                            command3 = "mv /Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/" + video_file_name + " /Users/shawnxiao/Workspace/SpiderWorkspace/kanong/videos && rm -f /Users/shawnxiao/Workspace/SpiderWorkspace/kanong/temp/*.mp4"
+                            if os.system(command3) == 0:
+                                print "mv successful"
+                            else:
+                                print "mv fail......"
+
+                    video_inner_source_element_string = '<video autoplay="autoplay" src="' + self.videos_source_url + video_file_name + '" style="width: 896px; height: 506px;"></video>'
+                    video_inner_source_element = etree.fromstring(video_inner_source_element_string)
+                    a_element.getparent().replace(a_element, video_inner_source_element)
+                except requests.exceptions.ConnectionError as e:
+                    logger.error("视频链接不能访问！！！")
+                    logger.error(e.message)
 
         # 替换文章中引用的其它文章链接
-        article_content_inner_a = article_content_doc.xpath("//table//div[@class='t_fsz']//font[starts-with(text(), 'https://www.51kanong.com/')]")
+        article_content_inner_a = article_content_doc.xpath(
+            "//table//div[@class='t_fsz']//font[starts-with(text(), 'https://www.51kanong.com/')]")
         for x in range(len(article_content_inner_a)):
-            print ">>>>>>>>>444444"
+            logger.info(">>>>>>>>>444444")
             font_element = article_content_inner_a[x]
             font_parent = font_element.getparent()
             html_source_url_full = self.html_source_url + KanongSpider.md5(font_element.text) + ".html"
@@ -343,41 +374,53 @@ class KanongSpider(object):
                 img_width = "400"
                 img_height = "711"
 
-            img_res = requests.session().get(img_url)
-            img_string = StringIO(img_res.content)
-            img_stream = Image.open(img_string)
-            img_format = img_stream.format
-            img_size = img_stream.size
+            try:
+                img_res = requests.session().get(img_url)
+                img_string = StringIO(img_res.content)
+                img_stream = Image.open(img_string)
+                img_format = img_stream.format
+                img_size = img_stream.size
 
-            # 如果图片是表情图片，大小需要给定真实图片大小，否则表情图片会被撑的很大，很难看
-            img_width_real = img_size[0]
-            img_height_real = img_size[1]
-            if img_width_real < 400:
-                img_width = str(img_width_real)
-                img_height = str(img_height_real)
+                # 如果图片是表情图片，大小需要给定真实图片大小，否则表情图片会被撑的很大，很难看
+                img_width_real = img_size[0]
+                img_height_real = img_size[1]
+                if img_width_real < 400:
+                    img_width = str(img_width_real)
+                    img_height = str(img_height_real)
 
-            img_filename = KanongSpider.md5(img_url) + "." + img_format
-            new_img_url = self.images_source_url + img_filename
-            img_stream.save(self.images_path + img_filename)
+                img_filename = KanongSpider.md5(img_url) + "." + img_format
+                new_img_url = self.images_source_url + img_filename
+                img_stream.save(self.images_path + img_filename)
 
-            new_img_element_string = "<img id='" + KanongSpider.md5(
-                img_url) + "' src='" + new_img_url + "' width='" + img_width + "' height='" + img_height + "'/>"
-            new_img_element = etree.fromstring(new_img_element_string)
+                new_img_element_string = "<img id='" + KanongSpider.md5(
+                    img_url) + "' src='" + new_img_url + "' width='" + img_width + "' height='" + img_height + "'/>"
+                new_img_element = etree.fromstring(new_img_element_string)
 
-            article_content_inner_images[x].getparent().replace(article_content_inner_images[x], new_img_element)
+                article_content_inner_images[x].getparent().replace(article_content_inner_images[x], new_img_element)
+            except requests.exceptions.ConnectionError as e:
+                logger.error("图片链接不能访问！！！")
+                logger.error(e.message)
 
     # 爬去其它列表页文章目标地址和相关概要信息 & 爬去列表页文章内容
     def crawl_article_page(self, crawl_root_link, tbodys):
         for i in range(len(tbodys)):
-            article_id = ''.join(re.findall(r"\d+\.?\d*", tbodys[i].attrib['id']))
+            article_id = ''.join(re.findall(r"\d", tbodys[i].attrib['id']))
+
+            # 判断是否已经爬取过了
+            if self.redis.sismember("spider_kanong_html_ids", article_id):
+                logger.warning("检查到[" + article_id + "]已经爬取过了,跳过！")
+                continue
+
             tbody = etree.HTML(etree.tostring(tbodys[i]))
             article_a = tbody.xpath("//a[@class='deanforumtitname']")[0]
+            article_title = article_a.text
             article_page_url = article_a.attrib['href']
             article_page_url = self.website_hostname + article_page_url
             logger.info("!!!!!!article_page_url : " + article_page_url)
-            article_title = article_a.text
             # 爬取文章页面详细内容
             article_page_res = self.session.get(article_page_url)
+            logger.info(article_page_res.content)
+            logger.info(article_page_res.status_code)
             article_page_doc = etree.HTML(article_page_res.content.replace("&nbsp;", " "))
 
             # 爬取文章标题html
@@ -406,7 +449,8 @@ class KanongSpider(object):
             new_article_content_html = etree.tostring(article_content_doc)
             new_article_content_html = self.HTMLParser.unescape(new_article_content_html)
 
-            article_content = article_page_doc.xpath("//div[@class='viewbox firstfloor cl']//div[@class='t_fsz']//table//text()")
+            article_content = article_page_doc.xpath(
+                "//div[@class='viewbox firstfloor cl']//div[@class='t_fsz']//table//text()")
             article_content = ''.join(article_content)
             # 处理特殊字符
             article_content = article_content.replace(' ', '').replace('\n', '').replace('\r', '')
@@ -414,8 +458,8 @@ class KanongSpider(object):
             pattern = re.compile(ur"[\u4e00-\u9fa5]")
             article_content = "".join(pattern.findall(article_content.decode('utf8'))).encode('utf-8')
 
-            new_article_content_html = self.html_template.replace(self.html_template_title_pattern, article_title).\
-                replace(self.html_template_title_html_pattern, title_html).\
+            new_article_content_html = self.html_template.replace(self.html_template_title_pattern, article_title). \
+                replace(self.html_template_title_html_pattern, title_html). \
                 replace(self.html_template_article_html_pattern, new_article_content_html)
 
             file_name = article_id + ".html"
@@ -437,10 +481,12 @@ class KanongSpider(object):
                 "source_link": article_page_url,
                 "type": article_type
             }
-            create_status = self.es.index(index=self.es_index, doc_type=self.es_index_type, id=article_id,
-                                          body=article_body)
+            create_status = self.es.index(index=self.es_index, doc_type=self.es_index_type, id=article_id, body=article_body)
+
             if not create_status:
                 logger.info("Crawl Fail! URL: " + article_page_url)
+            else:
+                self.redis.sadd("spider_kanong_html_ids", article_id)
 
     def main(self):
         start_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
@@ -457,7 +503,7 @@ class KanongSpider(object):
                 self.session.cookies.set("kanong_6ab6_forumdefstyle", "1")
                 list_page_res = self.session.get(list_page_url)
                 list_page_doc = etree.HTML(list_page_res.content)
-                list_table_tbodys = list_page_doc.xpath("//table[@id='threadlisttableid']/tbody[starts-with(@id, 'normalthread')]")
+                list_table_tbodys = list_page_doc.xpath("//table[@id='threadlisttableid']/tbody[starts-with(@id, 'normalthread') or starts-with(@id, 'stickthread')]")
 
                 # 爬取列表页首页文章目标地址和相关概要信息
                 self.crawl_article_page(v, list_table_tbodys)
