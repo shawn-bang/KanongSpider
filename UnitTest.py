@@ -76,7 +76,8 @@ password = raw_input('Please input password: ')
 if login_by_username(username, password):
     # target_url = "https://www.51kanong.com/xyk-2250277-1.htm"
     # target_url = "https://www.51kanong.com/xyk-2176082-1.htm"
-    target_url = "https://www.51kanong.com/xyk-1971390-1.htm"
+    # target_url = "https://www.51kanong.com/xyk-1971390-1.htm"
+    target_url = "https://www.51kanong.com/xyk-1725656-1.htm"
     target_res = session.get(target_url)
     article_content_doc = etree.HTML(target_res.content)
     # 直接在文章主体中嵌入video标签，直接下载-------------------------------------------------------------------------------
@@ -147,7 +148,7 @@ if login_by_username(username, password):
         print ">>>>>>>>>333333"
         font_password_element = article_content_inner_password[x]
         font_text = font_password_element.text
-        password = ''.join(re.findall(r"\d", font_text))
+        password = ''.join(re.findall(r"\w", font_text))
         for z in range(len(article_content_inner_videos2)):
             a_element = article_content_inner_videos2[z]
             entrance_video_url = a_element.attrib['href']
